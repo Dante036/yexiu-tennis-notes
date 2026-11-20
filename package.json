@@ -1,0 +1,7 @@
+{
+  "name": "yexiu-tennis-notes",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "node site/build.mjs" },
+  "dependencies": { "markdown-it": "15.0.3" }
+}
