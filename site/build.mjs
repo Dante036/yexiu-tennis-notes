@@ -6,6 +6,25 @@ const md = new MarkdownIt();
 const escape = md.utils.escapeHtml;
 const read = file => fs.readFileSync(file, 'utf8');
 const encode = file => file.split('/').map(encodeURIComponent).join('/');
+
+// Parse stage, episode badge, and tags from README.md
+const metaByFile = new Map();
+let currentStage = '';
+for (const line of read('README.md').split('\n')) {
+  const stageMatch = line.match(/^###\s+(.+)$/);
+  if (stageMatch) {
+    currentStage = stageMatch[1].trim();
+    continue;
+  }
+  const itemMatch = line.match(/^- \*\*([^｜*]+)｜[^*]+\*\* — \[[^\]]+\]\((lessons\/[^)]+\.md)\)(?: · 标签：(.+))?$/);
+  if (itemMatch) {
+    const [, ep, file, tags = ''] = itemMatch;
+    if (!metaByFile.has(file)) {
+      metaByFile.set(file, { ep: ep.trim(), stage: currentStage, tags: tags.trim() });
+    }
+  }
+}
+
 const groups = [];
 for (const token of md.parse(read('SUMMARY.md'), {})) {
   if (token.type !== 'inline') continue;
@@ -17,7 +36,8 @@ for (const token of md.parse(read('SUMMARY.md'), {})) {
   const file = decodeURIComponent(link.attrGet('href'));
   if (!file.startsWith('lessons/')) continue;
   const title = token.children.filter(child => child.type === 'text').map(child => child.content).join('');
-  groups.at(-1).pages.push({ file, title, url: file.replace(/\.md$/, '.html'), source: read(file) });
+  const meta = metaByFile.get(file) ?? { ep: '', stage: '', tags: '' };
+  groups.at(-1).pages.push({ file, title, url: file.replace(/\.md$/, '.html'), source: read(file), ...meta });
 }
 const pages = groups.flatMap(group => group.pages);
 const byFile = new Map(pages.map(page => [page.file, page]));
@@ -33,7 +53,17 @@ function localTarget(href, file) {
 const images = new Set();
 function renderLesson(page) {
   const tokens = md.parse(page.source, {});
-  for (const token of tokens) {
+  const toc = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token.type === 'heading_open' && token.tag === 'h2') {
+      const text = tokens[i + 1]?.content?.trim();
+      if (text) {
+        const id = `sec-${toc.length}`;
+        token.attrSet('id', id);
+        toc.push({ id, text });
+      }
+    }
     for (const child of token.children ?? []) {
       if (child.type === 'link_open') {
         const href = child.attrGet('href');
@@ -58,7 +88,10 @@ function renderLesson(page) {
   }
   const firstHeading = tokens.findIndex(token => token.type === 'heading_open' && token.tag === 'h1');
   if (firstHeading >= 0) tokens.splice(firstHeading, 3);
-  return md.renderer.render(tokens, md.options, {});
+  const tocHtml = toc.length > 1
+    ? `<nav class="toc" aria-label="本课目录">${toc.map(item => `<a href="#${item.id}">${escape(item.text)}</a>`).join('')}</nav>`
+    : '';
+  return tocHtml + md.renderer.render(tokens, md.options, {});
 }
 
 function write(file, content) {
@@ -85,11 +118,29 @@ ${body}
 </html>`;
 }
 
+const starterFiles = [
+  'lessons/正手篇.md',
+  'lessons/反手篇.md',
+  'lessons/发球篇.md',
+  'lessons/小臂内旋篇.md',
+  'lessons/正反手胸椎随挥篇.md',
+  'lessons/“掉拍头”.md',
+];
+const starterHtml = starterFiles
+  .map(f => byFile.get(f))
+  .filter(Boolean)
+  .map(p => `<a href="${encode(p.url)}">${escape(p.title)}</a>`)
+  .join('<span class="arrow" aria-hidden="true">→</span>');
+
 const sections = groups.map((group, i) => `
 <section class="category" id="category-${i}">
 <h2>${escape(group.title)}</h2>
-<ul class="course-list">${group.pages.map(page =>
-  `<li><a href="${encode(page.url)}">${escape(page.title)}</a></li>`).join('')}</ul>
+<ul class="course-list">${group.pages.map(page => {
+  const badge = page.ep ? `<span class="ep">${escape(page.ep)}</span>` : '';
+  const metaParts = [page.stage, page.tags].filter(Boolean).join(' · ');
+  const metaHtml = metaParts ? `<span class="course-meta">${escape(metaParts)}</span>` : '';
+  return `<li><a href="${encode(page.url)}"><span class="course-title">${badge}${escape(page.title)}</span>${metaHtml}</a></li>`;
+}).join('')}</ul>
 </section>`).join('');
 
 fs.rmSync('dist', { recursive: true, force: true });
@@ -100,6 +151,7 @@ write('index.html', layout('叶修网球课程笔记', '', `
 <label class="sr-only" for="search">搜索课程</label>
 <input id="search" type="search" placeholder="搜索课程、动作或关键词" autocomplete="off">
 <p id="search-status" role="status" hidden></p>
+<nav class="starter" aria-label="新手推荐顺序"><strong>新手推荐：</strong>${starterHtml}</nav>
 <nav class="categories" aria-label="技术分类">${groups.map((group, i) => `<a href="#category-${i}">${escape(group.title)}</a>`).join('')}</nav>
 ${sections}
 </main>`));
